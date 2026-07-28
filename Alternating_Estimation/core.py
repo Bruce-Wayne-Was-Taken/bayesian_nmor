@@ -111,6 +111,17 @@ class ParameterContext:
     likelihood_mode_transverse: str = "Gaussian"
     f_bias_offset_nuisance: float = 0.0
     Est_First_Z: bool = False
+    kl_parameter_samples: int = 256
+    kl_outcome_samples: int = 64
+
+    # Monte Carlo parameters
+    kl_parameter_samples: int = 256      # N_theta
+    kl_outcome_samples: int = 64         # N_y
+
+    # Time points used for KL prediction
+    kl_time_mode: str = "subsample"           # "full" or "subsample"
+    kl_time_points: int = 2
+    kl_time_stride: int = 4              # every 4th sample if subsample
 
     # Pulse parameters
     sim_pulse_thresh: float = 0.3
