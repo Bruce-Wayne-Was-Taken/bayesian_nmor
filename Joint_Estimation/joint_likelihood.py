@@ -137,5 +137,5 @@ def calculate_joint_likelihood_gpu(
     # numerical stability
 
     logL = logL - cp.max(logL)
-
+    del residual
     return logL
