@@ -105,9 +105,9 @@ class ParameterContext:
     B_unk_bound_transverse_upper: float = 0.5
     init_resolution_longitudinal: float = 0.01
     init_resolution_transverse: float = 0.005
-    sigma_noise_longitudinal: float = 0.4
-    sigma_noise_transverse: float = 0.4
-    # likelihood_mode_longitudinal: str = "Gaussian"
+    sigma_noise_likelihood: float = 0.4
+    # sigma_noise_transverse: float = 0.4
+    likelihood_mode: str = "Gaussian"
     # likelihood_mode_transverse: str = "Gaussian"
     f_bias_offset_nuisance: float = 0.0
     # Est_First_Z: bool = False
@@ -492,20 +492,20 @@ def plot_heat_and_surface(
         traj_bias = np.repeat(
             traj_bias, (X_vec.shape[0] - curr_time_index - 1) // len(traj_bias)
         )
-        traj_bias = np.asarray(traj_bias)/0.7 #FIXME Mhz to Gauss conversion for plotting
+        traj_bias = np.asarray(traj_bias)
         ax.plot(
             X_vec[curr_time_index] + X_vec[: len(traj_bias)],
             traj_bias,
-            color="red",
+            color="green",
             marker="o",
-            markersize=5,
+            markersize=1,
             label="Trajectory",
         )
     ax.tick_params(axis='both', which='both', top=True, right=True,direction='in', length=6)#, width=1.2)
     for spine in ax.spines.values():
         spine.set_linewidth(1.2)
         spine.set_edgecolor('black')
-    cbar = plt.colorbar(im, label="$\mid I_{\mathrm{exp}}(t, B_c) - I_{\mathrm{sim}}(t, B_c; \hat{B}_y, \hat{B}_z)\mid$")
+    cbar = plt.colorbar(im, label=r"$\mid I_{\mathrm{exp}}(t, B_c) - I_{\mathrm{sim}}(t, B_c; \hat{B}_y, \hat{B}_z)\mid$")
     cbar.outline.set_linewidth(1.2)
     cbar.outline.set_edgecolor('black')
     cbar.ax.tick_params(direction='in', length=6)#, width=1.5)
@@ -568,7 +568,6 @@ def animation_posterior(posteriors, bz_grid, by_grid, save_path):
     anim.save(save_path, writer='pillow', fps=4)
     plt.close(fig)
 
-#TODO Make sure that this code is refactored for plotting KL divergence GIFS our joint estimator implimentation
 def animation_kl(expectedkl, f_bias_axis, save_path):
     # Setup figure
     fig, ax = plt.subplots(figsize=(8, 6))
@@ -604,7 +603,7 @@ def animation_kl(expectedkl, f_bias_axis, save_path):
 
     # Option 2: Save as GIF (No external dependencies usually)
     anim.save(save_path, writer='pillow', fps=4)
-    anim.close()
+    plt.close(fig)
 
 
     # interpolator and interpolation validator for Y field estimation

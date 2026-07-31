@@ -389,7 +389,7 @@ def expected_information_gain_mc_gpu(
 
     observations = generate_synthetic_observations_gpu(
         predictions,
-        params.sigma_noise_longitudinal,
+        params.sigma_noise_likelihood,
     )
 
     # ---------------------------------
@@ -403,8 +403,8 @@ def expected_information_gain_mc_gpu(
         posterior.bz_axis,
         posterior.by_axis,
         interpolator,
-        params.sigma_noise_longitudinal,
-        params.likelihood_mode_longitudinal,
+        params.sigma_noise_likelihood,
+        params.likelihood_mode,
     )
 
     # ---------------------------------
@@ -505,7 +505,7 @@ def expected_information_gain_mc_gpu(
 
     observations = generate_synthetic_observations_gpu(
         predictions,
-        params.sigma_noise_longitudinal,
+        params.sigma_noise_likelihood,
     )
 
     # ---------------------------------------------------------
@@ -519,8 +519,8 @@ def expected_information_gain_mc_gpu(
         posterior.bz_axis,
         posterior.by_axis,
         interpolator,
-        params.sigma_noise_longitudinal,
-        params.likelihood_mode_longitudinal,
+        params.sigma_noise_likelihood,
+        params.likelihood_mode,
     )
 
     # ---------------------------------------------------------

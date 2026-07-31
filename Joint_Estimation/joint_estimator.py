@@ -85,8 +85,8 @@ class JointEstimator:
             bz_grid=self.posterior.bz_axis,
             by_grid=self.posterior.by_axis,
             interpolator=self.interpolator,
-            sigma_noise=self.params.sigma_noise_longitudinal,
-            likelihood_mode=self.params.likelihood_mode_longitudinal,
+            sigma_noise=self.params.sigma_noise_likelihood,
+            likelihood_mode=self.params.likelihood_mode,
         )
         self.posterior.update(log_likelihood)
 
