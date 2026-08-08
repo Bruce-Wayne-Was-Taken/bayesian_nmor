@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from math import ceil
-
+import time
 import cupy as cp
 
 from joint_likelihood import calculate_joint_likelihood_gpu
@@ -16,6 +16,7 @@ class MeasurementUpdate:
     measurement: cp.ndarray
     times: cp.ndarray
     bias: float 
+    LC_bias: float
 
 
 class JointEstimator:
@@ -64,24 +65,27 @@ class JointEstimator:
         self.support_history.append(
             {
                 "grid_shape": (self.posterior.Nz, self.posterior.Ny),
-                "bz_axis": self.posterior.bz_axis.get().copy(),
-                "by_axis": self.posterior.by_axis.get().copy(),
+                "bz_axis": cp.asnumpy(self.posterior.bz_axis).copy(),
+                "by_axis": cp.asnumpy(self.posterior.by_axis).copy(),
             }
         )
 
-    def _make_record(self, measurement, times, bias):
+    def _make_record(self, measurement, times, bias, LC_bias):
         return MeasurementUpdate(
             measurement=cp.array(measurement, dtype=cp.float64, copy=True),
             times=cp.array(times, dtype=cp.float64, copy=True),
-            bias=float(cp.asarray(bias).get()),
+            bias=float(cp.asnumpy(cp.asarray(bias))),
+            LC_bias = float(cp.asnumpy(cp.asarray(LC_bias)))
         )
 
     #The function that does the posterior update no matter whether zoomed or not
     def _apply_record(self, record):
+        start = time.time()
         log_likelihood = calculate_joint_likelihood_gpu(
             measurement=record.measurement,
             t_pts=record.times,
             bias=record.bias,
+            LC_bias = record.LC_bias, 
             bz_grid=self.posterior.bz_axis,
             by_grid=self.posterior.by_axis,
             interpolator=self.interpolator,
@@ -89,6 +93,7 @@ class JointEstimator:
             likelihood_mode=self.params.likelihood_mode,
         )
         self.posterior.update(log_likelihood)
+        print("Time Taken to evaluvate the Likelihood", time.time() - start, end = "| ")
 
     @staticmethod
     def _next_axis_count(current_count, config):
@@ -102,8 +107,8 @@ class JointEstimator:
     def _propose_axis(self, axis, hpd_lower, hpd_upper, physical_bounds):
         """Return ``(axis, zoomed)`` for one support dimension."""
         config = self.zoom_config
-        current_lower = float(axis[0].get())
-        current_upper = float(axis[-1].get())
+        current_lower = float(cp.asnumpy(axis[0]))
+        current_upper = float(cp.asnumpy(axis[-1]))
         current_span = current_upper - current_lower
         hpd_span = hpd_upper - hpd_lower
 
@@ -139,15 +144,16 @@ class JointEstimator:
         if self.zoom_config is None:
             return None
 
+        start = time.time()
         hpd_bounds = self.posterior.hpd_bounds(self.zoom_config.credible_mass)
         old_shape = (self.posterior.Nz, self.posterior.Ny)
         old_bz_bounds = (
-            float(self.posterior.bz_axis[0].get()),
-            float(self.posterior.bz_axis[-1].get()),
+            float(cp.asnumpy(self.posterior.bz_axis[0])),
+            float(cp.asnumpy(self.posterior.bz_axis[-1])),
         )
         old_by_bounds = (
-            float(self.posterior.by_axis[0].get()),
-            float(self.posterior.by_axis[-1].get()),
+            float(cp.asnumpy(self.posterior.by_axis[0])),
+            float(cp.asnumpy(self.posterior.by_axis[-1])),
         )
 
         bz_axis, zoomed_bz = self._propose_axis(
@@ -172,11 +178,9 @@ class JointEstimator:
             physical_by_bounds=self.posterior.physical_by_bounds,
         )
 
-        #how does the posterior handle the new data? FIXME 
-
         for record in self.update_records:
             self._apply_record(record)
-
+        print("Time taken to zoom and set posterior for new points", time.time() - start, end = "| ")
         event = {
             "update_index": len(self.update_records),
             "old_shape": old_shape,
@@ -184,12 +188,12 @@ class JointEstimator:
             "old_bz_bounds": old_bz_bounds,
             "old_by_bounds": old_by_bounds,
             "new_bz_bounds": (
-                float(self.posterior.bz_axis[0].get()),
-                float(self.posterior.bz_axis[-1].get()),
+                float(cp.asnumpy(self.posterior.bz_axis[0])),
+                float(cp.asnumpy(self.posterior.bz_axis[-1])),
             ),
             "new_by_bounds": (
-                float(self.posterior.by_axis[0].get()),
-                float(self.posterior.by_axis[-1].get()),
+                float(cp.asnumpy(self.posterior.by_axis[0])),
+                float(cp.asnumpy(self.posterior.by_axis[-1])),
             ),
             "hpd_bounds": hpd_bounds,
             "zoomed_bz": zoomed_bz,
@@ -198,14 +202,16 @@ class JointEstimator:
         self.zoom_events.append(event)
         return event
 
-    def update(self, measurement, times, bias):
+    def update(self, measurement, times, applied_bias):
         """Apply one measurement update, then zoom and replay if required."""
-        record = self._make_record(measurement, times, bias)
+        LC_bias = applied_bias[1]
+        bias = applied_bias[0]
+        record = self._make_record(measurement, times, bias, LC_bias)
         self.update_records.append(record)
         self._apply_record(record)
         self.maybe_zoom()
 
-        #does this reapply every posterior update for the zoomed posterior, isnt that insanely computationally expensive? What if we interpolate instead as well? FIXME
+        #TODO have a coding option to possibly interpolate the posterior instead, even though its less rigorous, maybe more computationally tractable
 
         summary = self.posterior.summary()
         self.history.append(summary)

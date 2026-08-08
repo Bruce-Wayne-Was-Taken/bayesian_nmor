@@ -44,6 +44,7 @@ class PosteriorSummary:
     std_by: float
     covariance: cp.ndarray
     entropy: float
+    weights: cp.ndarray
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class JointZoomConfig:
 
 class JointPosterior:
     """Discrete posterior with array convention ``weights[iz, iy] = P(Bz, By)``."""
+    weight: cp.ndarray
 
     def __init__(
         self,
@@ -91,25 +93,27 @@ class JointPosterior:
 
         # Uniform prior in log-space.
         self.log_weights = cp.ones((self.Nz, self.Ny), dtype=cp.float64)
+        
+
         self.normalize()
 
     @staticmethod
     def _validate_axis(axis, name):
         if len(axis) < 2:
             raise ValueError(f"{name} must contain at least two points")
-        if bool(cp.any(axis[1:] <= axis[:-1]).get()):
+        if bool(cp.asnumpy(cp.any(axis[1:] <= axis[:-1]))):
             raise ValueError(f"{name} must be strictly increasing")
 
     @staticmethod
     def _resolve_physical_bounds(bounds, axis, name):
         if bounds is None:
-            return (float(axis[0].get()), float(axis[-1].get()))
+            return (float(cp.asnumpy(axis)[0]), float(cp.asnumpy(axis)[-1]))
 
         if len(bounds) != 2 or bounds[0] >= bounds[1]:
             raise ValueError(f"{name} must be an increasing (lower, upper) pair")
 
-        axis_lower = float(axis[0].get())
-        axis_upper = float(axis[-1].get())
+        axis_lower = float(cp.asnumpy(axis[0]))
+        axis_upper = float(cp.asnumpy(axis[-1]))
         if bounds[0] > axis_lower or bounds[1] < axis_upper:
             raise ValueError(f"{name} must contain the current support")
 
@@ -118,6 +122,7 @@ class JointPosterior:
     @property
     def weights(self):
         return cp.exp(self.log_weights)
+    #FIXME can we turn this into an attribute instead to save on time?
 
     def normalize(self):
         self.log_weights = normalize_log_weights(self.log_weights)
@@ -137,8 +142,8 @@ class JointPosterior:
         index = cp.argmax(self.log_weights)
         iz, iy = cp.unravel_index(index, self.log_weights.shape)
         return (
-            float(self.bz_axis[iz].get()),
-            float(self.by_axis[iy].get()),
+            float(cp.asnumpy(self.bz_axis[iz])),
+            float(cp.asnumpy(self.by_axis[iy])),
         )
 
     def _coordinate_mesh(self):
@@ -146,16 +151,16 @@ class JointPosterior:
 
     def mean(self):
         """Return posterior mean ``(Bz, By)``."""
-        weights = self.weights
+        weights = self.weight
         bz_mesh, by_mesh = self._coordinate_mesh()
         return (
-            float(cp.sum(weights * bz_mesh).get()),
-            float(cp.sum(weights * by_mesh).get()),
+            float(cp.asnumpy(cp.sum(weights * bz_mesh))),
+            float(cp.asnumpy(cp.sum(weights * by_mesh))),
         )
 
     def covariance(self):
         """Return the 2-by-2 posterior covariance matrix for ``(Bz, By)``."""
-        weights = self.weights
+        weights = self.weight
         bz_mesh, by_mesh = self._coordinate_mesh()
         mean_bz = cp.sum(weights * bz_mesh)
         mean_by = cp.sum(weights * by_mesh)
@@ -169,16 +174,16 @@ class JointPosterior:
         )
 
     def entropy(self):
-        weights = self.weights
-        return float((-cp.sum(weights * cp.log(weights + 1e-300))).get())
+        weights = self.weight
+        return float(cp.asnumpy((-cp.sum(weights * cp.log(weights + 1e-300)))))
 
     def marginal_bz(self):
         """Return ``P(Bz)`` with shape ``(Nz,)``."""
-        return cp.sum(self.weights, axis=1)
+        return cp.sum(self.weight, axis=1)
 
     def marginal_by(self):
         """Return ``P(By)`` with shape ``(Ny,)``."""
-        return cp.sum(self.weights, axis=0)
+        return cp.sum(self.weight, axis=0)
 
     def credible_region(self, mass=0.95):
         """Return the probability threshold enclosing at least ``mass``."""
@@ -187,8 +192,8 @@ class JointPosterior:
 
         flat = cp.sort(self.weights.ravel())[::-1]
         cumulative = cp.cumsum(flat)
-        index = min(int(cp.searchsorted(cumulative, cp.asarray(mass)).get()), len(flat) - 1)
-        return float(flat[index].get())
+        index = min(int(cp.searchsorted(cumulative, (cp.asarray(mass)))), len(flat) - 1)
+        return float(cp.asnumpy(flat[index]))
 
     def hpd_bounds(self, mass=0.999):
         """Return axis-aligned bounds of the discrete highest-density region.
@@ -199,13 +204,15 @@ class JointPosterior:
         threshold = self.credible_region(mass)
         iz, iy = cp.where(self.weights >= threshold)
         return (
-            float(self.bz_axis[cp.min(iz)].get()),
-            float(self.bz_axis[cp.max(iz)].get()),
-            float(self.by_axis[cp.min(iy)].get()),
-            float(self.by_axis[cp.max(iy)].get()),
+            float(cp.asnumpy(self.bz_axis[cp.min(iz)])),
+            float(cp.asnumpy(self.bz_axis[cp.max(iz)])),
+            float(cp.asnumpy(self.by_axis[cp.min(iy)])),
+            float(cp.asnumpy(self.by_axis[cp.max(iy)])),
         )
 
     def summary(self):
+        weights = self.weights
+        self.weight = weights
         covariance = self.covariance()
         mean_bz, mean_by = self.mean()
         map_bz, map_by = self.MAP()
@@ -214,10 +221,11 @@ class JointPosterior:
             map_by=map_by,
             mean_bz=mean_bz,
             mean_by=mean_by,
-            std_bz=float(cp.sqrt(covariance[0, 0]).get()),
-            std_by=float(cp.sqrt(covariance[1, 1]).get()),
+            std_bz=float(cp.asnumpy(cp.sqrt(covariance[0, 0]))),
+            std_by=float(cp.asnumpy(cp.sqrt(covariance[1, 1]))),
             covariance=covariance,
             entropy=self.entropy(),
+            weights = weights
         )
 
     def sample(self, n_samples, return_indices=False):

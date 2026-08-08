@@ -2,13 +2,13 @@
 Tensor conventions
 ------------------
 
-Prediction : (Nt, Nz, Ny) # need new dimension after z for bias -  number of points decided on the set bias FIXME
+Prediction : (Nt, Nz, Nbias, Ny) 
 
-Residual : (Nt, Nz, Ny) # need new dimension after z for bias FIXME
+Residual : (Nt, Nz, Nbias, Ny) 
  
-Likelihood : (Nz, Ny) # need new dimension after z for bias FIXME
+Likelihood : (Nz, Ny) 
 
-Posterior : (Nz, Ny) # need new dimension after z for bias FIXME
+Posterior : (Nz, Ny) 
 """
 import cupy as cp
 
@@ -26,37 +26,36 @@ def get_predictions_joint(
     Parameters
     ----------
     t_pts : (Nt,)
-    bz_grid : (Nz,) # need new dimension after z for bias, and it will be (Nz, Nbias) FIXME
+    bz_grid : (Nz,) 
+    bias : (Nbias,) 
     by_grid : (Ny,)
-    bias : scalar
 
     Returns
     -------
-    prediction : (Nt, Nz, Ny) # need new dimension after z for bias, (Nt, Nz, Nbias, Ny) FIXME
+    prediction : (Nt, Nz, Nbias,Ny) 
     """
 
     Nt = len(t_pts)
     Nz = len(bz_grid)
     # Nbias, how are we going to query this grid? bias set points, plus minus least count, or do we consider more values in between?
+    Nbias = len(bias)
     Ny = len(by_grid)
 
     # ---------------------------------------------------------
     # Broadcast everything
     # ---------------------------------------------------------
 
-    T = t_pts[:, None, None] # need new dimension after z for bias FIXME
+    T = t_pts[:, None, None, None]
 
-    Z = bz_grid[None, :, None] + bias # need new dimension after z for bias FIXME
+    Z = bz_grid[None, :, None, None] + bias[None, None, :, None]
 
-    Y = by_grid[None, None, :] # need new dimension after z for bias FIXME
+    Y = by_grid[None, None, None, :]
 
-    final_shape = (Nt, Nz, Ny) # need new dimension after z for bias, (Nt, Nz, Nbias, Ny) FIXME
+    final_shape = (Nt, Nz, Nbias, Ny)
 
     T = cp.broadcast_to(T, final_shape)
 
     Z = cp.broadcast_to(Z, final_shape)
-
-    # need new dimension after z for bias, need a broadcaster for bias FIXME
 
     Y = cp.broadcast_to(Y, final_shape)
 
@@ -65,14 +64,15 @@ def get_predictions_joint(
         Z.ravel(),
         Y.ravel(),
     )
-
+    del T,Z,Y
     return prediction.reshape(final_shape)
 
 
 def calculate_joint_likelihood_gpu(
     measurement,
     t_pts,
-    bias, # need new dimension after z for bias FIXME
+    bias, 
+    LC_bias,
     bz_grid,
     by_grid,
     interpolator,
@@ -84,49 +84,70 @@ def calculate_joint_likelihood_gpu(
 
     Returns
     -------
-    logL : (Nz, Ny) # need new dimension after z for bias, and do a simple marginalisation average over the bias FIXME
+    logL : (Nz, Ny) 
     """
-
+    
+    bias_array = cp.linspace(bias - LC_bias, bias + LC_bias, 3) #right now set to 3 points, we can make this more complicated later FIXME 
     prediction = get_predictions_joint(
         interpolator,
         t_pts,
         bz_grid,
         by_grid,
-        bias,
+        bias_array, #need to include for 3 point array
     )
+    del bias_array
 
     if likelihood_mode == "Gaussian":
 
-        residual = (
-            measurement[:, None, None]
-            - prediction
+        residual = cp.subtract(
+                    measurement[:, None, None, None],
+                    prediction
         )
+
+        del prediction
 
         SSE = cp.sum(
             residual * residual,
             axis=0,
         )
 
+        del residual
+
         logL = -SSE / (2 * sigma_noise**2)
+
+        del SSE
+        print("shape of the log likelihood",logL.shape)
+        cp.exp(logL, out = logL)
+        logL = cp.sum(logL, axis = 1)
+        cp.log(logL, out = logL)
 
     elif likelihood_mode == "Cauchy":
 
         gamma = sigma_noise * 1.177
 
-        residual = (
-            measurement[:, None, None]
-            - prediction
+        residual = cp.subtract(
+                            measurement[:, None, None, None],
+                            prediction
         )
+
+        del prediction 
 
         log_term = cp.log(
             1
-            + residual * residual / gamma**2
+            + residual * residual / gamma**2,
         )
 
-        logL = -cp.sum(
-            log_term,
-            axis=0,
-        )
+        del residual
+
+        logL = cp.sum(
+            -1 * log_term,
+            axis=0)
+        del log_term
+        cp.exp(logL, out  = logL)
+        logL = cp.sum(logL, axis = 1)
+        cp.log(logL, out = logL)
+        
+
 
     else:
 
@@ -136,6 +157,5 @@ def calculate_joint_likelihood_gpu(
 
     # numerical stability
 
-    logL = logL - cp.max(logL)
-    del residual
+    cp.subtract(logL, cp.max(logL), out = logL)
     return logL

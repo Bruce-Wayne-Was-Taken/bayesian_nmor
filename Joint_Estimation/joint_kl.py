@@ -11,19 +11,19 @@ Tensor conventions
 
 Prediction
 
-    (Nb,Np,Nt)
+    (Nb, Nbias, Np, Nt)
 
 Likelihood
 
-    (Nb,Np,Nz,Ny)
+    (Nb, Nbias, Np, Nz, Ny)
 
 Posterior
 
-    (Nb,Np,Nz,Ny)
+    (Nb, Nbias, Np, Nz, Ny)
 
 KL
 
-    (Nb,Np)
+    (Nb, Nbias, Np)
 
 Utility
 
@@ -31,7 +31,7 @@ Utility
 """
 
 import cupy as cp
-
+import time
 from joint_posterior import normalize_log_weights
 from joint_likelihood import get_predictions_joint
 
@@ -70,9 +70,11 @@ def compute_kl_gpu(
         - prior_log
     )
 
+    del posterior
+
     return cp.sum(
         kl,
-        axis=(-2, -1),
+        axis=(-2, -1)
     )
 
 def generate_synthetic_observations_gpu(
@@ -85,14 +87,14 @@ def generate_synthetic_observations_gpu(
 
     predictions
 
-        (Nb,Np,Nt)
+        (Nb, Nbias, Np, Nt)
 
     Returns
     -------
 
     observations
 
-        (Nb,Np,Nt)
+        (Nb, Nbias, Np, Nt)
     """
 
     noise = cp.random.normal(
@@ -104,7 +106,6 @@ def generate_synthetic_observations_gpu(
     return predictions + noise
 
 
-#how do i condition on just one point?
 def build_prediction_times(
     current_time,
     next_time,
@@ -165,7 +166,7 @@ def get_predictions_joint_bias_batch(
 
     candidate_biases
 
-        (Nb,)
+        (Nb, Nbias)
 
     bz_samples
 
@@ -180,10 +181,10 @@ def get_predictions_joint_bias_batch(
 
     prediction
 
-        (Nb,Np,Nt)
+        (Nb, Nbias, Np, Nt)
     """
 
-    Nb = len(candidate_biases)
+    Nb, Nbias = candidate_biases.shape
     Np = len(bz_samples)
     Nt = len(t_pts)
 
@@ -192,23 +193,23 @@ def get_predictions_joint_bias_batch(
     # ------------------------------
 
     T = cp.broadcast_to(
-        t_pts[None, None, :],
-        (Nb, Np, Nt),
+        t_pts[None, None, None, :],
+        (Nb, Nbias, Np, Nt),
     )
 
     BIAS = cp.broadcast_to(
-        candidate_biases[:, None, None],
-        (Nb, Np, Nt),
+        candidate_biases[:, :, None, None],
+        (Nb, Nbias, Np, Nt),
     )
 
     BZ = cp.broadcast_to(
-        bz_samples[None, :, None],
-        (Nb, Np, Nt),
+        bz_samples[None, None, :, None],
+        (Nb, Nbias, Np, Nt),
     )
 
     BY = cp.broadcast_to(
-        by_samples[None, :, None],
-        (Nb, Np, Nt),
+        by_samples[None, None, :, None],
+        (Nb, Nbias, Np, Nt),
     )
 
     # Total longitudinal field
@@ -221,8 +222,11 @@ def get_predictions_joint_bias_batch(
         BY.ravel(),
     )
 
+    del T, BIAS, BZ, BY, Z
+
     return prediction.reshape(
         Nb,
+        Nbias,
         Np,
         Nt,
     )
@@ -245,7 +249,7 @@ def get_predictions_joint_grid(
     t_pts : (Nt,)
         Time points used for KL evaluation.
 
-    candidate_biases : (Nb,)
+    candidate_biases : (Nb, Nbias)
         Candidate control fields.
 
     bz_grid : (Nz,)
@@ -256,12 +260,12 @@ def get_predictions_joint_grid(
 
     Returns
     -------
-    prediction : (Nb, Nt, Nz, Ny)
+    prediction : (Nb, Nbias, Nt, Nz, Ny)
 
-        prediction[b, t, iz, iy]
+        prediction[b, bias, t, iz, iy]
     """
 
-    Nb = len(candidate_biases)
+    Nb, Nbias = candidate_biases.shape
     Nt = len(t_pts)
     Nz = len(bz_grid)
     Ny = len(by_grid)
@@ -271,18 +275,18 @@ def get_predictions_joint_grid(
     #
     # Final shape:
     #
-    # (Nb, Nt, Nz, Ny)
+    # (Nb, Nbias, Nt, Nz, Ny)
     # ---------------------------------------------------------
 
-    T = t_pts[None, :, None, None]
+    T = t_pts[None, None, :, None, None]
 
-    BIAS = candidate_biases[:, None, None, None]
+    BIAS = candidate_biases[:, :, None, None, None]
 
-    BZ = bz_grid[None, None, :, None]
+    BZ = bz_grid[None, None, None, :, None]
 
-    BY = by_grid[None, None, None, :]
+    BY = by_grid[None, None, None, None, :]
 
-    final_shape = (Nb, Nt, Nz, Ny)
+    final_shape = (Nb, Nbias, Nt, Nz, Ny)
 
     T = cp.broadcast_to(T, final_shape)
 
@@ -302,6 +306,8 @@ def get_predictions_joint_grid(
         BY.ravel(),
     )
 
+    del T, BIAS, BZ, BY, Z
+
     return prediction.reshape(final_shape)
 
 def calculate_joint_likelihood_mc_gpu(
@@ -314,7 +320,7 @@ def calculate_joint_likelihood_mc_gpu(
     sigma_noise,
     likelihood_mode="Gaussian",
 ):
-    Nb = len(candidate_biases)
+    Nb, Nbias = candidate_biases.shape
     Nz = len(bz_grid)
     Ny = len(by_grid)
     Nt = len(t_pts)
@@ -327,17 +333,20 @@ def calculate_joint_likelihood_mc_gpu(
         by_grid,
     )
 
-    obs = observations[:, :, :, None, None]
-    pred = prediction_grid[:, None, :, :, :]
+    obs = observations[:, :, :, :, None, None]
+    pred = prediction_grid[:, :, None, :, :, :]
     if likelihood_mode == "Gaussian":
         residual = obs - pred
+        del obs, pred
 
         SSE = cp.sum(
             residual**2,
-            axis=2,
+            axis=3,
         )
+        del residual
 
         logL = -SSE/(2*sigma_noise**2)
+        del SSE
     elif likelihood_mode == "Cauchy":
         gamma = sigma_noise * 1.177
 
@@ -345,101 +354,24 @@ def calculate_joint_likelihood_mc_gpu(
             1
             + residual**2/gamma**2
         )
+        del residual
+        del SSE
 
         logL = -cp.sum(
             log_term,
-            axis=2,
+            axis=3,
         )
 
-    logL = logL - cp.max(logL,axis=(-2,-1),keepdims=True,)
+        del log_term
+
+    cp.subtract(logL, cp.max(logL,axis=(-2,-1),keepdims=True,), out = logL)
     
     return logL
 
-
 def expected_information_gain_mc_gpu(
     posterior,
     candidate_biases,
-    t_pts,
-    interpolator,
-    params,
-):
-    # ---------------------------------
-    # Sample posterior
-    # ---------------------------------
-
-    bz_samples, by_samples = posterior.sample(
-        params.kl_parameter_samples
-    )
-
-    # ---------------------------------
-    # Predict sampled responses
-    # ---------------------------------
-
-    predictions = get_predictions_joint_bias_batch(
-        interpolator,
-        t_pts,
-        candidate_biases,
-        bz_samples,
-        by_samples,
-    )
-
-    # ---------------------------------
-    # Generate synthetic observations
-    # ---------------------------------
-
-    observations = generate_synthetic_observations_gpu(
-        predictions,
-        params.sigma_noise_likelihood,
-    )
-
-    # ---------------------------------
-    # Likelihood over whole grid
-    # ---------------------------------
-
-    logL = calculate_joint_likelihood_mc_gpu(
-        observations,
-        t_pts,
-        candidate_biases,
-        posterior.bz_axis,
-        posterior.by_axis,
-        interpolator,
-        params.sigma_noise_likelihood,
-        params.likelihood_mode,
-    )
-
-    # ---------------------------------
-    # Bayesian update
-    # ---------------------------------
-
-    prior_log = posterior.log_weights
-
-    prior_log = prior_log[None, None, :, :]
-
-    posterior_log = prior_log + logL
-
-    posterior_log = normalize_log_weights(
-        posterior_log
-    )
-
-    # ---------------------------------
-    # KL
-    # ---------------------------------
-
-    kl = compute_kl_gpu(
-        prior_log,
-        posterior_log,
-    )
-
-    utility = cp.mean(
-        kl,
-        axis=1,
-    )
-
-    return utility
-
-def expected_information_gain_mc_gpu(
-    posterior,
-    candidate_biases,
+    LC_bias,
     current_time,
     next_time,
     interpolator,
@@ -454,7 +386,7 @@ def expected_information_gain_mc_gpu(
     ----------
     posterior : JointPosterior
 
-    candidate_biases : (Nb,)
+    candidate_biases : (Nb, Nbias)
 
     current_time : float
 
@@ -466,7 +398,7 @@ def expected_information_gain_mc_gpu(
 
     Returns
     -------
-    utility : (Nb,)
+    utility : (Nb)
     """
 
     # ---------------------------------------------------------
@@ -486,6 +418,10 @@ def expected_information_gain_mc_gpu(
     bz_samples, by_samples = posterior.sample(
         params.kl_parameter_samples
     )
+
+    # Candidate Bias with LC_bias being accounted for.
+    # candidate_biases = candidate_biases[:, None] + cp.linspace(-LC_bias, LC_bias, 3)[None, :] 
+    candidate_biases = candidate_biases[:, None] + cp.asarray([0])[None, :] 
 
     # ---------------------------------------------------------
     # Predict "true" measurements
@@ -523,19 +459,22 @@ def expected_information_gain_mc_gpu(
         params.likelihood_mode,
     )
 
+    del t_pts, bz_samples, by_samples, predictions, observations
     # ---------------------------------------------------------
     # Prior
     # ---------------------------------------------------------
 
     prior_log = posterior.log_weights
 
-    prior_log = prior_log[None, None, :, :]
+    prior_log = prior_log[None, None, None, :, :]
 
     # ---------------------------------------------------------
     # Temporary posterior
     # ---------------------------------------------------------
 
     posterior_log = prior_log + logL
+
+    del logL
 
     posterior_log = normalize_log_weights(
         posterior_log
@@ -550,20 +489,25 @@ def expected_information_gain_mc_gpu(
         posterior_log,
     )
 
+    del prior_log, posterior_log
+
     # ---------------------------------------------------------
     # Monte Carlo expectation
     # ---------------------------------------------------------
 
     utility = cp.mean(
         kl,
-        axis=1,
+        axis=(1, 2),
     )
 
+    del kl
+    # cp.get_default_memory_pool().free_all_blocks()
     return utility
 
 def choose_next_bias(
     posterior,
-    candidate_biases,
+    candidate_biases,   
+    LC_bias,
     current_time,
     next_time,
     interpolator,
@@ -573,10 +517,11 @@ def choose_next_bias(
     Choose the candidate bias with maximum
     expected information gain.
     """
-
+    start = time.time()
     utility = expected_information_gain_mc_gpu(
         posterior,
         candidate_biases,
+        LC_bias,
         current_time,
         next_time,
         interpolator,
@@ -584,7 +529,7 @@ def choose_next_bias(
     )
 
     best = cp.argmax(utility)
-
+    print("Time taken to Evaluvate Next Bias", time.time() - start, end = "| ")
     return (
         candidate_biases[best],
         utility,

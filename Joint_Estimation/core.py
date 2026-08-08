@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 from matplotlib.animation import FuncAnimation
 from matplotlib.ticker import MaxNLocator
+from matplotlib.lines import Line2D
 plt.rcParams.update({'font.family': 'serif', 'font.size': 12})
 import cupy as cp
 # from cupyx.scipy.ndimage import map_coordinates
@@ -16,6 +17,7 @@ from datetime import datetime
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Optional
 # from scipy.interpolate import RegularGridInterpolator
+from scipy.stats import linregress
 # from scipy.ndimage import spline_filter
 
 # Data loading
@@ -453,8 +455,24 @@ def calibration(data, v_dark, v_max):
     calibrated_data = (data - v_dark) * scale
     return calibrated_data
 
+def get_final_interpolator(config: Optional[DataContext], params: ParameterContext):
+    # if the config DataContext stringblob has an interpolator path, use that to load the interpolator otherwise generate.
+    print("...Building Final Interpolator...")
+    if not os.path.exists(config.interpolator):
+        to = time.time()
+        t_sim, f_sim, by_sim, cube = load_simulation_cube(config)
+        full_interp = GPUInterpolator(t_sim, f_sim, by_sim, cube)
+        full_interp.save(config.interpolator)
+        t_sim, f_sim, by_sim = cp.asarray(t_sim), cp.asarray(f_sim), cp.asarray(by_sim)
+    else:
+        to = time.time()
+        t_sim, f_sim, by_sim, full_interp = GPUInterpolator.load(config.interpolator)  
+    print("Time taken to load Interpolator:", time.time() - to)
+    return t_sim, f_sim, by_sim, full_interp
 
-#Plotting
+
+#Plotting Functions
+
 base_cmap = plt.get_cmap('inferno')
 
 # Sample the colormap from 0.2 to 1.0, explicitly skipping the darkest 20%
@@ -463,7 +481,6 @@ color_array = base_cmap(np.linspace(0.2, 1.0, 256))
 # Create the new, brighter colormap
 custom_inferno = mcolors.LinearSegmentedColormap.from_list('inferno_bright', color_array)
 
-#TODO Make sure that this code is refactored for plotting KL divergence GIFS our joint estimator implimentation
 def plot_heat_and_surface(
     X_vec,
     Y_vec,
@@ -475,7 +492,7 @@ def plot_heat_and_surface(
     save_path = '',
     format = "svg"
 ):
-    Y_vec = Y_vec #FIXME Mhz to Gauss conversion for plotting
+    Y_vec = Y_vec
     Xg, Yg = np.meshgrid(X_vec, Y_vec, indexing="ij")  # note: meshgrid order (cols = y)
     # heatmap
     fig, ax = plt.subplots(figsize=(8, 5))
@@ -605,21 +622,84 @@ def animation_kl(expectedkl, f_bias_axis, save_path):
     anim.save(save_path, writer='pillow', fps=4)
     plt.close(fig)
 
+def plot_estimate_calibration(bz_map, bz_std, by_map, by_std, fid_scan_values, save_path = None, format = "svg"):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10), sharex=True, gridspec_kw={'hspace': 0.1})
+    bz_map, bz_std, by_map, by_std, fid_scan_values = np.asarray(bz_map), np.asarray(bz_std), np.asarray(by_map), np.asarray(by_std), np.asarray(fid_scan_values)
 
-    # interpolator and interpolation validator for Y field estimation
-
-
-def get_final_interpolator(config: Optional[DataContext], params: ParameterContext):
-    # if the config DataContext stringblob has an interpolator path, use that to load the interpolator otherwise generate.
-    print("...Building Final Interpolator...")
-    if not os.path.exists(config.interpolator):
-        to = time.time()
-        t_sim, f_sim, by_sim, cube = load_simulation_cube(config)
-        full_interp = GPUInterpolator(t_sim, f_sim, by_sim, cube)
-        full_interp.save(config.interpolator)
-        t_sim, f_sim, by_sim = cp.asarray(t_sim), cp.asarray(f_sim), cp.asarray(by_sim)
-    else:
-        to = time.time()
-        t_sim, f_sim, by_sim, full_interp = GPUInterpolator.load(config.interpolator)  
-    print("Time taken to load Interpolator:", time.time() - to)
-    return t_sim, f_sim, by_sim, full_interp
+    # Global aesthetics
+    plt.rcParams.update({
+            'axes.linewidth': 1.5
+    })
+        
+    color_bz = '#1A5276'
+    color_bz_fill = '#5DADE2'
+    color_by = '#943126'
+    color_by_fill = '#F1948A'
+    
+    # labels = list(estimates_dict_z.keys())
+    # data_z = [estimates_dict_z[k] for k in labels]
+    # data_y = [estimates_dict_y[k] for k in labels]
+    
+    # means_z = [np.mean(arr) for arr in data_z]
+    # means_y = [np.mean(arr) for arr in data_y]
+    
+    res_z = linregress(fid_scan_values, bz_map)
+    res_y = linregress(fid_scan_values, by_map)
+    print("Z: Slope =", res_z.slope, ", Slope Error = ", res_z.stderr,", Intercept = ", res_z.intercept)
+    print("Y: Slope =", res_y.slope, ", Slope Error = ", res_y.stderr,", Intercept = ", res_y.intercept)
+    
+    
+    # --- Plot Bz (Top Panel) ---
+    ax1.errorbar(fid_scan_values, bz_map, yerr=bz_std, 
+                      fmt='s', markersize=4, capsize=3, elinewidth=1, color=color_bz, label='Adaptive Bayesian', alpha=0.9)
+    
+    # Bz Linear Fit
+    x_line = np.linspace(min(fid_scan_values), max(fid_scan_values), 10)
+    fit_label_z = rf'$B_z$ MAP Linear Fit, $R^2={res_z.rvalue**2:.3f}$'
+    ax1.plot(x_line, res_z.slope * x_line + res_z.intercept, '-', color="black", linewidth=1.5, zorder=2, label=fit_label_z)
+        
+    # --- Plot By (Bottom Panel) ---
+    ax2.errorbar(fid_scan_values, by_map, yerr=by_std, 
+                          fmt='s', markersize=4, capsize=3, elinewidth=1, color=color_by, label='Adaptive Bayesian', alpha=0.9)
+    
+    # By Linear Fit
+    fit_label_y = rf'$B_y$ MAP Linear Fit, $R^2={res_y.rvalue**2:.3f}$'
+    ax2.plot(x_line, res_y.slope * x_line + res_y.intercept, '-', color="black", linewidth=1.5, zorder=2, label=fit_label_y)
+    ax2.plot(x_line, x_line, '--', color="grey", linewidth=0.8, zorder=1, label=r'Ideal Calibration (Ensemble $B_y \, = \, B_{y, \mathrm{FID}}$)')
+    
+    # --- Formatting & Despining ---
+    ax1.set_ylabel(r'Estimated $B_z$ ($\mathrm{\mu}$T)')
+    ax2.set_ylabel(r'Estimated $B_y$ ($\mathrm{\mu}$T)')
+    ax2.set_xlabel(r'$B_{y, \mathrm{FID}}$ ($\mathrm{\mu}$T)')
+    ax1.tick_params(axis='both', which='both', top=True, right=True, direction='in', length=6)#, width=1.5)
+    ax2.tick_params(axis='both', which='both', top=True, right=True, direction='in', length=6)#, width=1.5)
+    
+    for ax in [ax1, ax2]:
+        ax.grid(True, axis='y', linestyle='-', color='#E5E8E8', alpha=0.8, zorder=0)
+        ax.spines['top'].set_linewidth(1.2)
+        ax.spines['right'].set_linewidth(1.2)
+        ax.spines['left'].set_linewidth(1.2)
+        ax.spines['bottom'].set_linewidth(1.2)
+        ax.legend(loc='best', framealpha=0.9, fontsize=12, edgecolor='none')
+    
+    # --- Custom Legend Handles ---
+    mean_line = Line2D([], [], color='black', linestyle='--', linewidth=1, label='Bayesian Estimate Calibration')
+        
+    # Extract existing handles (the fit lines)
+    handles_ax1, labels_ax1 = ax1.get_legend_handles_labels()
+    handles_ax2, labels_ax2 = ax2.get_legend_handles_labels()
+    
+    # Apply unified legends
+    ax1.legend(handles= [mean_line] + handles_ax1, loc='best', framealpha=0.9, fontsize=9, edgecolor='none')
+    ax2.legend(handles= [mean_line] + handles_ax2, loc='best', framealpha=0.9, fontsize=9, edgecolor='none')
+    
+    # Dynamic limits
+    padding = 2
+    ax2.set_xlim(min(fid_scan_values) - padding*2, max(fid_scan_values) + padding*2)
+    ax1.set_ylim(min(bz_map)*1.1, max(bz_map)*1.1)
+    ax2.set_xticks(fid_scan_values)
+    
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=1200, bbox_inches='tight', format =format)
+    plt.show()
